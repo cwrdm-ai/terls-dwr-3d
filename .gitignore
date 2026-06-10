@@ -1,0 +1,14 @@
+# Radar data — large NetCDF files (152 MB each), download from MOSDAC instead
+data/
+*.nc
+
+# Reference papers / PDFs (copyright)
+*.pdf
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Large intermediate outputs (keep PNGs, drop NetCDF cubes)
+output/*.nc
