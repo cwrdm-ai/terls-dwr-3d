@@ -1,14 +1,14 @@
 """Stacked-CAPPI 3D render — the dark IMD/MOSDAC presentation style.
 
 Reproduces the reference figure: discrete constant-altitude slices (CAPPIs)
-of the reflectivity cube drawn as flat speckled sheets stacked in 3D, on a
-black background, jet colormap, vertical dBZ colorbar on the right, lat/lon
-on the horizontal axes and altitude (km) on the vertical axis.
+of the reflectivity cube drawn as smooth filled-contour sheets stacked in 3D,
+on a black background, jet colormap, vertical dBZ colorbar on the right,
+lat/lon on the horizontal axes and altitude (km) on the vertical axis.
 
-Why stacked layers instead of a continuous cloud: each sheet reads as a map
-("what does the rain field look like at 4 km?") while the stack shows the
-vertical structure — where echo tops sit, how cores tilt with height. It is
-the operational radar-analyst's view of the same 81 x 481 x 481 cube.
+Rendering style: each sheet is a matplotlib filled contour (contourf) drawn
+at its altitude offset — continuous colored regions like the pyiwr / IMD
+figures, not per-cell scatter dots. A NaN-aware Gaussian pre-smoothing pass
+(SMOOTH_SIGMA) removes single-cell speckle so contours stay clean.
 
 Works with both grid flavors:
   - our pyart cubes  (coords z/y/x in meters from the radar)
@@ -28,7 +28,9 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
+from matplotlib import cm
 from matplotlib.colors import Normalize
+from scipy.ndimage import gaussian_filter
 
 # TERLS radar site
 TERLS_LAT = 8.5374
@@ -40,8 +42,13 @@ OUTPUT_DIR = Path(__file__).resolve().parent.parent / "output"
 # only convective cores reach yellow/red — matching the reference figure.
 DBZ_VMIN = 0.0
 DBZ_VMAX = 60.0
-MAX_POINTS_PER_LAYER = 25_000
-VIEW_ELEV = 18
+CONTOUR_LEVELS = np.arange(DBZ_VMIN, DBZ_VMAX + 2.5, 2.5)
+
+# Gaussian smoothing applied per sheet before contouring (grid cells).
+# 0 = off. ~1.2 removes single-cell speckle without fattening storm cores.
+SMOOTH_SIGMA = 1.2
+
+VIEW_ELEV = 24
 VIEW_AZIM = -62
 
 
@@ -66,44 +73,67 @@ def load_any(nc_path: Path):
     return dbz, z_km, lat_axis, lon_axis
 
 
+def smooth_sheet(sheet: np.ndarray, sigma: float) -> np.ndarray:
+    """NaN-aware Gaussian smoothing: smooths values without bleeding NaN in,
+    and only extends slightly past the original echo edges."""
+    valid = np.isfinite(sheet)
+    if sigma <= 0 or not valid.any():
+        return sheet
+    filled = np.where(valid, sheet, 0.0)
+    num = gaussian_filter(filled, sigma)
+    den = gaussian_filter(valid.astype(np.float32), sigma)
+    out = np.full_like(sheet, np.nan)
+    ok = den > 0.3        # keep cells with enough real-data support nearby
+    out[ok] = num[ok] / den[ok]
+    return out
+
+
 def render(nc_path: Path, layer_step: int, dbz_floor: float, out_png: Path) -> Path:
     print(f"Loading {nc_path.name}...")
     dbz, z_km, lat_axis, lon_axis = load_any(nc_path)
     LON2, LAT2 = np.meshgrid(lon_axis, lat_axis)   # (lat, lon) grids
 
     layer_idx = list(range(1, dbz.shape[0], layer_step))
-    print(f"  plotting {len(layer_idx)} CAPPI sheets "
+    print(f"  contouring {len(layer_idx)} CAPPI sheets "
           f"({z_km[layer_idx[0]]:.2f} -> {z_km[layer_idx[-1]]:.2f} km, "
-          f"every {layer_step * 0.25:.1f} km), floor {dbz_floor:.0f} dBZ")
+          f"every {layer_step * 0.25:.1f} km), floor {dbz_floor:.0f} dBZ, "
+          f"smooth sigma={SMOOTH_SIGMA}")
 
     # ---- dark style ----
-    fig = plt.figure(figsize=(10, 8), facecolor="black")
+    fig = plt.figure(figsize=(11, 8.5), facecolor="black")
     ax = fig.add_subplot(111, projection="3d", facecolor="black")
     for pane in (ax.xaxis, ax.yaxis, ax.zaxis):
         pane.set_pane_color((0, 0, 0, 1))
         pane._axinfo["grid"]["color"] = (0.35, 0.35, 0.35, 0.35)
 
     norm = Normalize(vmin=DBZ_VMIN, vmax=DBZ_VMAX)
-    rng = np.random.default_rng(11)
-    sc = None
-    total = 0
+    n_drawn = 0
+    lat_min = lon_min = np.inf
+    lat_max = lon_max = -np.inf
     for k in layer_idx:
-        sheet = dbz[k]
-        keep = np.isfinite(sheet) & (sheet >= dbz_floor)
-        n = int(keep.sum())
-        if n == 0:
+        sheet = smooth_sheet(dbz[k], SMOOTH_SIGMA)
+        sheet = np.where(sheet >= dbz_floor, sheet, np.nan)
+        masked = np.ma.masked_invalid(sheet)
+        if masked.count() == 0:
             continue
-        lons, lats, vals = LON2[keep], LAT2[keep], sheet[keep]
-        if n > MAX_POINTS_PER_LAYER:
-            sel = rng.choice(n, MAX_POINTS_PER_LAYER, replace=False)
-            lons, lats, vals = lons[sel], lats[sel], vals[sel]
-        total += lons.size
-        sc = ax.scatter(
-            lons, lats, np.full(lons.size, z_km[k]),
-            c=vals, cmap="jet", norm=norm,
-            s=2.5, marker="s", alpha=0.8, linewidths=0, depthshade=False,
+        valid = np.isfinite(sheet)
+        lat_min = min(lat_min, LAT2[valid].min()); lat_max = max(lat_max, LAT2[valid].max())
+        lon_min = min(lon_min, LON2[valid].min()); lon_max = max(lon_max, LON2[valid].max())
+        ax.contourf(
+            LON2, LAT2, masked,
+            levels=CONTOUR_LEVELS, cmap="jet", norm=norm,
+            offset=float(z_km[k]), zdir="z",
+            alpha=0.9, antialiased=True,
         )
-    print(f"  {total:,} points drawn")
+        n_drawn += 1
+    print(f"  {n_drawn} sheets drawn")
+
+    # Frame the data, not the full 480 km grid — fills the figure like the
+    # reference instead of leaving dead space around small storms.
+    if np.isfinite(lat_min):
+        pad = 0.15
+        ax.set_xlim(lon_min - pad, lon_max + pad)
+        ax.set_ylim(lat_min - pad, lat_max + pad)
 
     ax.set_xlabel("Longitude (°E)", color="white", labelpad=8)
     ax.set_ylabel("Latitude (°N)", color="white", labelpad=8)
@@ -112,12 +142,14 @@ def render(nc_path: Path, layer_step: int, dbz_floor: float, out_png: Path) -> P
     ax.set_zticks([0, 3.5, 7, 10.5, 14, 17.5, 21])
     ax.tick_params(colors="white", labelsize=8)
     ax.view_init(elev=VIEW_ELEV, azim=VIEW_AZIM)
+    # Stretch the vertical screen axis so inter-sheet gaps read clearly.
+    ax.set_box_aspect((1.0, 1.0, 1.25))
 
-    if sc is not None:
-        cb = fig.colorbar(sc, ax=ax, shrink=0.65, pad=0.08)
-        cb.set_label("Reflectivity (dBZ)", color="white")
-        cb.ax.yaxis.set_tick_params(color="white")
-        plt.setp(cb.ax.get_yticklabels(), color="white")
+    sm = cm.ScalarMappable(norm=norm, cmap="jet")
+    cb = fig.colorbar(sm, ax=ax, shrink=0.65, pad=0.08)
+    cb.set_label("Reflectivity (dBZ)", color="white")
+    cb.ax.yaxis.set_tick_params(color="white")
+    plt.setp(cb.ax.get_yticklabels(), color="white")
 
     ax.set_title(
         f"Stacked CAPPI — TERLS DWR\n{nc_path.stem.replace('_gridded', '')}",
