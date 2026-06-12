@@ -48,9 +48,39 @@ everything the radar saw (1–3 M cells).
 | L2B | Nyquist velocity missing | inject ±24 m/s (TERLS dual-PRF) |
 | L2C | `lon`/`lat` dimension names swapped vs actual data layout | trust raw order (verified empirically) |
 
+## Quick start
+
+```bash
+# 1. Clone and install (Python 3.11+ required)
+git clone https://github.com/cwrdm-ai/terls-dwr-3d.git
+cd terls-dwr-3d
+pip install -r requirements.txt
+
+# 2. Get data: register (free) at mosdac.gov.in, order RCTLS_L2B_STD granules
+#    (Order -> RADAR -> TERLS C BAND), download and place the .nc files in data/
+
+# 3. Run the pipeline (raw polar file -> 3D cube -> first render, ~60 s)
+python src/pipeline.py "data/RCTLS_09JUN2026_050131_L2B_STD.nc"
+
+# 4. Render the MOSDAC-style stacked 3D figure from the cube
+python src/render_mosdac_exact.py "output/RCTLS_09JUN2026_050131_L2B_STD_gridded.nc"
+```
+
+Outputs land in `output/`: the gridded cube (`*_gridded.nc`, reusable by all
+renderers) and the rendered PNGs. Re-rendering from an existing cube takes
+seconds — only step 3 is heavy.
+
+To validate against the official product (requires the matching
+`RCTLS_L2C_VOL` granule for the same timestamp):
+
+```bash
+python src/compare_gridded.py "data/<their_L2C>.nc" "output/<our_gridded>.nc"
+```
+
 ## Requirements
 
-Python 3.11+, `arm-pyart`, `pyvista`, `xarray`, `netCDF4`, `scipy`, `matplotlib`.
+Python 3.11+ and the packages in [requirements.txt](requirements.txt) —
+`arm-pyart`, `pyvista`, `wradlib`, `xarray`, `netCDF4`, `scipy`, `matplotlib`.
 
 ## Acknowledgements
 

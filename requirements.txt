@@ -1,0 +1,11 @@
+# TERLS DWR 3D pipeline — Python 3.11+
+# Versions are minimums known to work (tested: pyart 2.1.1, pyvista 0.48.4,
+# wradlib 2.6.1, xarray 2025.12, netCDF4 1.7.3, numpy 1.26, matplotlib 3.8).
+arm-pyart>=2.0
+pyvista>=0.48
+wradlib>=2.0
+xarray>=2024.1
+netCDF4>=1.6
+numpy>=1.26
+scipy>=1.11
+matplotlib>=3.8
