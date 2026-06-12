@@ -37,8 +37,22 @@ def _sweep_view(radar: pyart.core.Radar, field: str, sl: slice) -> np.ndarray:
     return raw
 
 
-def correct(radar: pyart.core.Radar) -> pyart.core.Radar:
-    """Apply Gabella + Vulpiani fuzzy QC per sweep to DBZ and VEL in-place."""
+def correct(radar: pyart.core.Radar,
+            met_prob_threshold: float = MET_PROB_THRESHOLD,
+            nan_policy: str = "kill",
+            rescue_dbz: float = 10.0) -> pyart.core.Radar:
+    """Apply Gabella + Vulpiani fuzzy QC per sweep to DBZ and VEL in-place.
+
+    Parameters open for calibration against the official L2C product
+    (MOSDAC's exact constants live in unpublished SAC reports):
+
+    met_prob_threshold : gates with P(meteorological) below this are non-met.
+    nan_policy : what to do where the classifier has no dual-pol signal:
+        'kill'   — treat as non-met (harshest; v2 default)
+        'rescue' — keep if DBZ >= rescue_dbz (strong echo earns trust)
+        'keep'   — leave to the Gabella filter alone
+    rescue_dbz : threshold for the 'rescue' policy.
+    """
     dbz_full = np.ma.getdata(radar.fields["DBZ"]["data"]).astype(np.float32).copy()
     vel_full = np.ma.getdata(radar.fields["VEL"]["data"]).astype(np.float32).copy()
     base_mask = np.ma.getmaskarray(radar.fields["DBZ"]["data"]).copy()
@@ -70,13 +84,24 @@ def correct(radar: pyart.core.Radar) -> pyart.core.Radar:
         }
         prob_met, nan_mask = classify_echo_fuzzy(dat)
         # classify_echo_fuzzy returns MASKED arrays (masked where the radar
-        # recorded no usable dual-pol signal). A masked probability means the
-        # gate cannot be certified as weather — treat it as non-met, and
-        # convert to plain ndarrays so |= and .sum() see every element.
-        prob = np.ma.filled(prob_met, 0.0)
-        prob = np.where(np.isfinite(prob), prob, 0.0)
+        # recorded no usable dual-pol signal). Convert to plain ndarrays so
+        # |= and .sum() see every element.
+        prob = np.ma.filled(prob_met, np.nan)
         nm = np.ma.filled(nan_mask, True).astype(bool)
-        nonmet = np.asarray((prob < MET_PROB_THRESHOLD) | nm, dtype=bool)
+        nm |= ~np.isfinite(prob)
+
+        # Where the classification is VALID, trust the fuzzy probability.
+        nonmet_dualpol = ~nm & (np.where(np.isfinite(prob), prob, 0.0) < met_prob_threshold)
+        # Where it is NOT valid, apply the chosen policy.
+        if nan_policy == "kill":
+            nonmet_nan = nm
+        elif nan_policy == "rescue":
+            nonmet_nan = nm & ~(np.where(np.isfinite(dbz), dbz, -99.0) >= rescue_dbz)
+        elif nan_policy == "keep":
+            nonmet_nan = np.zeros_like(nm)
+        else:
+            raise ValueError(f"unknown nan_policy {nan_policy!r}")
+        nonmet = np.asarray(nonmet_dualpol | nonmet_nan, dtype=bool)
         n_fuzzy += int((nonmet & np.isfinite(dbz)).sum())
 
         # --- Step 2: Gabella 2002 spatial continuity filter ---
