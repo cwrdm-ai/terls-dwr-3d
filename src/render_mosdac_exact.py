@@ -126,6 +126,20 @@ def render(nc_path: Path, layer_step: int, dbz_floor: float, out_png: Path) -> P
     # Tighten the camera on the data.
     ax.set_box_aspect((1.15, 1.0, 0.85), zoom=1.12)
 
+    # Disclose the display choices on the canvas — vertical exaggeration,
+    # dBZ floor, and layer spacing are presentation decisions a reader must
+    # know to interpret the figure honestly.
+    mid_lat = float(np.mean(lat_axis))
+    lon_km = (lon_axis.max() - lon_axis.min()) * 111.0 * np.cos(np.radians(mid_lat))
+    vert_km = 21.0
+    # km represented per unit of box length, horizontally vs vertically
+    exagg = (lon_km / 1.15) / (vert_km / 0.85)
+    fig.text(0.13, 0.04,
+             f"TERLS C-band DWR  |  display floor {dbz_floor:.0f} dBZ  |  "
+             f"CAPPI sheets every {layer_step * 0.25:.1f} km  |  "
+             f"vertical exaggeration ≈ {exagg:.0f}×",
+             color="0.65", fontsize=7)
+
     mappable = cm.ScalarMappable(norm=norm, cmap=cmap)
     cb = fig.colorbar(mappable, ax=ax, shrink=0.78, pad=0.09,
                       boundaries=BOUNDS, ticks=BOUNDS[::2])
@@ -147,7 +161,10 @@ if __name__ == "__main__":
         print("usage: python src/render_mosdac_exact.py <gridded.nc> [layer_step] [dbz_floor]")
         sys.exit(1)
     nc = Path(sys.argv[1])
-    step = int(sys.argv[2]) if len(sys.argv) > 2 else 6
+    # Default 2.5 km sheet spacing: enough black gap between layers that each
+    # CAPPI reads as a separate map (the official figures' look). Use a
+    # smaller step for denser stacks at the cost of layer separation.
+    step = int(sys.argv[2]) if len(sys.argv) > 2 else 10
     floor = float(sys.argv[3]) if len(sys.argv) > 3 else 10.0
     out = OUTPUT_DIR / (nc.stem.replace("_gridded", "") + "_mosdac_exact.png")
     render(nc, step, floor, out)
