@@ -37,12 +37,27 @@ HALF_HORIZ_M = 240_000.0  # ±240 km from radar
 # ============================================================
 
 
-def grid(radar: pyart.core.Radar, output_nc: Path) -> Path:
-    """Run gridding and write the resulting Cartesian cube to NetCDF."""
+def grid(radar: pyart.core.Radar, output_nc: Path,
+         roi_func: str = "dist_beam", constant_roi: float | None = None) -> Path:
+    """Run gridding and write the resulting Cartesian cube to NetCDF.
+
+    roi_func='dist_beam' (default) spreads each gate over the beam-width —
+    smooth, fills gaps, but inflates echo coverage (Barnes smearing).
+    roi_func='constant' with a small constant_roi (~700 m) approximates the
+    tight wradlib-style interpolation MOSDAC's documented pipeline used:
+    each cube cell only sees gates that genuinely overlap it.
+    """
     print(
         f"Gridding to {N_ALTITUDE} x {N_LAT} x {N_LON} cube "
-        f"(1 km x 1 km horiz, 250 m vert)..."
+        f"(1 km x 1 km horiz, 250 m vert, roi={roi_func}"
+        + (f" {constant_roi:.0f} m" if constant_roi else "") + ")..."
     )
+
+    roi_kwargs = {"roi_func": roi_func}
+    if roi_func == "constant":
+        roi_kwargs["constant_roi"] = float(constant_roi or 700.0)
+    else:
+        roi_kwargs.update({"h_factor": 1.0, "nb": 1.5, "bsp": 1.0, "min_radius": 500.0})
 
     grid_obj = pyart.map.grid_from_radars(
         (radar,),
@@ -54,11 +69,7 @@ def grid(radar: pyart.core.Radar, output_nc: Path) -> Path:
         ),
         fields=["DBZ", "VEL_DEALIASED"] if "VEL_DEALIASED" in radar.fields else ["DBZ", "VEL"],
         weighting_function="Barnes2",
-        roi_func="dist_beam",
-        h_factor=1.0,
-        nb=1.5,
-        bsp=1.0,
-        min_radius=500.0,
+        **roi_kwargs,
     )
 
     output_nc.parent.mkdir(parents=True, exist_ok=True)

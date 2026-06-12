@@ -83,4 +83,18 @@ def read(path: str | Path) -> pyart.core.Radar:
         radar.time["units"] = scan_dt.strftime("seconds since %Y-%m-%d %H:%M:%S")
         print(f"  Fixed malformed time units -> '{radar.time['units']}'")
 
+    # Fix 4: rebuild broken sweep ray indices. The file writes ZEROS for both
+    # sweep_start_ray_index and sweep_end_ray_index, which makes pyart's
+    # iter_slice() return 1-ray "sweeps" — silently crippling every per-sweep
+    # algorithm (clutter filters, dealiasing). Rays are stored contiguously,
+    # uniform count per sweep, so the indices are reconstructable.
+    ssri = np.asarray(radar.sweep_start_ray_index["data"])
+    seri = np.asarray(radar.sweep_end_ray_index["data"])
+    if radar.nsweeps > 1 and ssri.ptp() == 0 and seri.ptp() == 0:
+        rays_per_sweep = radar.nrays // radar.nsweeps
+        starts = np.arange(radar.nsweeps, dtype=np.int32) * rays_per_sweep
+        radar.sweep_start_ray_index["data"] = starts
+        radar.sweep_end_ray_index["data"] = starts + rays_per_sweep - 1
+        print(f"  Fixed broken sweep ray indices -> {rays_per_sweep} rays/sweep")
+
     return radar
